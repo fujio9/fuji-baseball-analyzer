@@ -1,0 +1,37 @@
+---
+alwaysApply: true
+---
+Always use dataclasses for analysis results.
+Never return tuples with magic indexes.
+
+All coordinates must be normalized (0-1) before calculations.
+Never depend on screen resolution.
+
+Angles must be calculated using dot product.
+Do not use slope-based formulas.
+
+Keep Streamlit code minimal.
+Heavy processing must be outside UI.
+Use st.cache_data for expensive functions.
+
+ディレクトリ構成は以下のイメージです。
+baseball_analyzer/
+│
+├ video/
+│   └ loader.py
+│
+├ pose/
+│   └ mediapipe_pose.py
+│
+├ analysis/
+│   ├ angles.py
+│   ├ velocity.py
+│   └ metrics.py
+│
+├ ui/
+│   └ app.py
+│
+├ models/
+│   └ data_models.py
+│
+└ main.py

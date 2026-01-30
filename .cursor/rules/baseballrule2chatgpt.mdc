@@ -1,0 +1,51 @@
+---
+alwaysApply: true
+---
+# Project Overview
+This project is a baseball motion analysis app for pitching and batting.
+It analyzes videos using pose estimation and calculates joint angles and motion metrics.
+
+# Tech Stack
+- Python 3.11+
+- OpenCV for video processing
+- MediaPipe for pose estimation
+- NumPy for calculations
+- Streamlit for UI
+- Matplotlib for graphs
+
+# Code Rules
+- Use type hints for all functions
+- Prefer simple and readable code over clever code
+- Split logic into small functions
+- Avoid large classes
+- One responsibility per file
+
+# Architecture Rules
+- video/: video loading and preprocessing only
+- pose/: pose estimation only
+- analysis/: angle and metric calculations only
+- ui/: streamlit UI only
+- utils/: helper functions only
+
+Never mix UI and analysis logic in the same file.
+
+# Pose Rules
+- Use MediaPipe Pose landmarks as the base skeleton
+- Landmark index constants must be defined in one file
+- All joint angles must be calculated using vector math
+- Never hardcode pixel values
+
+# Performance Rules
+- Avoid unnecessary loops
+- Use NumPy vectorization
+- Cache heavy processing results
+- Use frame skipping for real-time preview
+
+# Output Rules
+- Always return structured data (dict or dataclass)
+- Never return raw mediapipe objects
+- Use JSON serializable formats
+
+# Testing
+- Write small testable pure functions
+- Separate I/O and computation

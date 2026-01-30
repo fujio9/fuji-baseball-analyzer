@@ -1,0 +1,21 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# Streamlit
+.streamlit/
+
+# 動画・大容量
+*.mp4
+*.mov
+*.avi
+*.mkv
+
+# temp
+tmp/
+temp/
+*.tmp
+
+# mac
+.DS_Store
