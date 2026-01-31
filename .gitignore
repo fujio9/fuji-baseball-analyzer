@@ -5,7 +5,8 @@ __pycache__/
 *.pyc
 
 # Streamlit
-.streamlit/
+.streamlit/*
+!.streamlit/config.toml
 
 # 動画・大容量
 *.mp4
