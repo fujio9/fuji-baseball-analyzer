@@ -4,6 +4,7 @@ import numpy as np
 from typing import Dict, Optional, Any
 import cv2
 import mediapipe as mp
+mp_pose = mp.solutions.pose
 
 
 # MediaPipe Pose ランドマークインデックス定数
@@ -44,23 +45,22 @@ class PoseLandmark:
     RIGHT_FOOT_INDEX = 32
 
 
-def initialize_pose() -> mp.solutions.pose.Pose:
+def initialize_pose() -> mp_pose.Pose:
     """MediaPipe Pose オブジェクトを初期化する
     
     Returns:
         MediaPipe Pose オブジェクト
     """
-    return mp.solutions.pose.Pose(
+    return mp_pose.Pose(
         static_image_mode=False,
-        model_complexity=2,
+        model_complexity=1,
         enable_segmentation=False,
-        min_detection_confidence=0.5,
-        min_tracking_confidence=0.5
+        min_detection_confidence=0.5
     )
 
 
 def detect_pose(
-    pose: mp.solutions.pose.Pose,
+    pose: mp_pose.Pose,
     frame: np.ndarray
 ) -> Optional[Any]:
     """フレームから姿勢を検出する
@@ -156,7 +156,7 @@ def normalize_landmarks(
 
 
 def process_frame(
-    pose: mp.solutions.pose.Pose,
+    pose: mp_pose.Pose,
     frame: np.ndarray
 ) -> Optional[Dict[str, Dict[str, float]]]:
     """フレームを処理して正規化済みランドマークを返す
