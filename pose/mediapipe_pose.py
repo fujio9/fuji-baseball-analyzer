@@ -1,10 +1,9 @@
 """MediaPipe を使った姿勢推定モジュール"""
 
 import numpy as np
-from typing import Dict, Optional
+from typing import Dict, Optional, Any
 import cv2
 import mediapipe as mp
-from mediapipe.framework.formats import landmark_pb2
 
 
 # MediaPipe Pose ランドマークインデックス定数
@@ -63,7 +62,7 @@ def initialize_pose() -> mp.solutions.pose.Pose:
 def detect_pose(
     pose: mp.solutions.pose.Pose,
     frame: np.ndarray
-) -> Optional[landmark_pb2.NormalizedLandmarkList]:
+) -> Optional[Any]:
     """フレームから姿勢を検出する
     
     Args:
@@ -86,7 +85,7 @@ def detect_pose(
 
 
 def normalize_landmarks(
-    landmarks: landmark_pb2.NormalizedLandmarkList
+    landmarks: Any
 ) -> Dict[str, Dict[str, float]]:
     """ランドマークを正規化済み座標の辞書に変換する
     
@@ -224,7 +223,7 @@ def calc_angle(
 
 
 def calculate_right_elbow_angle(
-    landmarks: landmark_pb2.NormalizedLandmarkList
+    landmarks: Any
 ) -> Optional[float]:
     """MediaPipeのランドマークから右肘角度を計算する
     
