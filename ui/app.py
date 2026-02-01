@@ -441,13 +441,34 @@ def create_annotated_video(
     
     fps = 30.0  # デフォルトFPS
     
-    # Cloud Run 対応: avc1 コーデックのみ使用（Streamlit st.video() で安定再生可能）
-    fourcc = cv2.VideoWriter_fourcc(*'avc1')
-    out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
+    # Cloud Run 対応: 複数のコーデックを順番に試す
+    # 優先順位: avc1 (H.264) → mp4v (MPEG-4 Part 2) → XVID
+    codecs_to_try = [
+        ('avc1', 'H.264 (avc1)'),
+        ('mp4v', 'MPEG-4 Part 2 (mp4v)'),
+        ('XVID', 'XVID'),
+    ]
     
-    if not out.isOpened():
-        st.error("H.264(avc1) コーデックが利用できません。ffmpeg入りOpenCVが必要です")
+    out = None
+    used_codec = None
+    for codec_name, codec_desc in codecs_to_try:
+        fourcc = cv2.VideoWriter_fourcc(*codec_name)
+        out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
+        if out.isOpened():
+            used_codec = codec_desc
+            break
+        else:
+            if out is not None:
+                out.release()
+            out = None
+    
+    if out is None or not out.isOpened():
+        st.error("利用可能な動画コーデックが見つかりません。ffmpeg入りOpenCVが必要です")
         return None
+    
+    # 使用したコーデックをログ出力（デバッグ用）
+    if used_codec:
+        st.info(f"動画コーデック: {used_codec}")
     
     written_frames = 0
     skipped_frames = 0
