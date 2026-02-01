@@ -9,6 +9,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 # OpenCV/MediaPipe 用のシステム依存をインストール
 # ffmpeg を追加して H.264 (avc1) コーデック対応
+# OpenCV が H.264 で動画を書き出せるようにする
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libglib2.0-0 \
     libsm6 \
@@ -16,7 +17,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libxrender1 \
     libgl1 \
     ffmpeg \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && apt-get clean
 
 # 作業ディレクトリを設定
 WORKDIR /workspace
@@ -35,5 +37,6 @@ ENV STREAMLIT_SERVER_ADDRESS=0.0.0.0
 EXPOSE 8080
 
 # Streamlit アプリを起動（Cloud Run の PORT 環境変数を使用）
+# PORT 環境変数が設定されていない場合は 8080 を使用
 CMD streamlit run app.py --server.port=${PORT:-8080} --server.address=0.0.0.0
 
