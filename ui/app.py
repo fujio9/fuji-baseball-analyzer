@@ -39,41 +39,62 @@ st.markdown(
 
 def _save_uploaded_file_to_temp(uploaded_file: Any) -> Optional[str]:
     """
-    CURSOR指示コメント:
-    - Streamlit uploaded_file から安全に一時ファイルを生成
-    - read() は何度も呼べないので、一度変数に保持して使用
-    - ファイルサイズが0バイトになる問題を回避
-    - uploaded_file が None または empty の場合にエラー表示
+    Cloud Run 対応: /tmp フォルダに一時ファイルを保存
+    
+    Args:
+        uploaded_file: Streamlitのアップロードファイルオブジェクト
+    
+    Returns:
+        一時ファイルのパス（失敗時はNone）
     """
-
     if uploaded_file is None:
         st.error("動画ファイルがアップロードされていません")
         return None
 
     try:
         # read() で一度だけバイト列取得
+        uploaded_file.seek(0)  # ファイルポインタを先頭に戻す
         file_bytes = uploaded_file.read()
         if not file_bytes:
             st.error("アップロードされた動画が空です")
             return None
 
-        # 安全に一時ファイルに書き込み
-        tmp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
-        tmp_file.write(file_bytes)
-        tmp_file.close()  # 閉じることで確実に書き込み完了
-        st.info(f"一時ファイル生成完了: {tmp_file.name}, サイズ: {os.path.getsize(tmp_file.name)} バイト")
-        return tmp_file.name
+        # /tmp フォルダに明示的に保存（Cloud Run 対応）
+        tmp_dir = "/tmp"
+        os.makedirs(tmp_dir, exist_ok=True)
+        
+        # ファイル拡張子を取得
+        file_ext = os.path.splitext(uploaded_file.name)[1] or ".mp4"
+        
+        # 一時ファイルパスを生成
+        tmp_file_path = tempfile.mktemp(suffix=file_ext, dir=tmp_dir)
+        
+        # ファイルに書き込み
+        with open(tmp_file_path, "wb") as tmp_file:
+            tmp_file.write(file_bytes)
+        
+        return tmp_file_path
 
     except Exception as e:
         st.error(f"一時ファイル生成中にエラー発生: {e}")
         return None
 
 
-def _read_frames_from_video(video_path: str) -> Optional[List[np.ndarray]]:
-    """動画ファイルからフレームを読み込む
+def _read_frames_from_video(
+    video_path: str,
+    max_frames: int = 1000,
+    max_width: int = 1280,
+    frame_skip: int = 1,
+    progress_container: Any = None
+) -> Optional[List[np.ndarray]]:
+    """動画ファイルからフレームを読み込む（Cloud Run 対応：大きな動画でもタイムアウトしない）
     
     Args:
         video_path: 動画ファイルのパス
+        max_frames: 最大フレーム数（メモリ節約）
+        max_width: 最大幅（リサイズ）
+        frame_skip: フレームスキップ数（1=全フレーム、2=1フレームおき）
+        progress_container: 進行状況表示用のコンテナ
     
     Returns:
         フレームのリスト（失敗時はNone）
@@ -81,12 +102,80 @@ def _read_frames_from_video(video_path: str) -> Optional[List[np.ndarray]]:
     cap = cv2.VideoCapture(video_path)
     frames: List[np.ndarray] = []
     
+    if not cap.isOpened():
+        if progress_container:
+            progress_container.error("動画ファイルを開けませんでした")
+        return None
+    
     try:
+        # 動画情報を取得
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        fps = cap.get(cv2.CAP_PROP_FPS)
+        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        
+        if progress_container:
+            progress_container.info(f"動画情報: {width}x{height}, {total_frames}フレーム, {fps:.1f}fps")
+        
+        # リサイズが必要か判定
+        resize_needed = width > max_width
+        if resize_needed:
+            scale = max_width / width
+            new_width = max_width
+            new_height = int(height * scale)
+            if progress_container:
+                progress_container.info(f"動画をリサイズ: {new_width}x{new_height}")
+        
+        # フレームスキップを調整（動画が長すぎる場合）
+        if total_frames > max_frames * frame_skip:
+            frame_skip = max(1, total_frames // max_frames)
+            if progress_container:
+                progress_container.info(f"フレームスキップ: {frame_skip}（メモリ節約のため）")
+        
+        frame_count = 0
+        read_count = 0
+        
+        progress_bar = None
+        if progress_container:
+            progress_bar = progress_container.progress(0)
+            status_text = progress_container.empty()
+        
         while True:
             ret, frame = cap.read()
             if not ret:
                 break
+            
+            # フレームスキップ
+            if frame_count % frame_skip != 0:
+                frame_count += 1
+                continue
+            
+            # リサイズ
+            if resize_needed:
+                frame = cv2.resize(frame, (new_width, new_height))
+            
             frames.append(frame)
+            read_count += 1
+            
+            # 進行状況更新
+            if progress_bar and frame_count % 10 == 0:
+                progress = min(1.0, frame_count / total_frames)
+                progress_bar.progress(progress)
+                if status_text:
+                    status_text.text(f"読み込み中: {read_count}/{min(total_frames // frame_skip, max_frames)} フレーム")
+            
+            # 最大フレーム数に達したら終了
+            if read_count >= max_frames:
+                if progress_container:
+                    progress_container.warning(f"最大フレーム数（{max_frames}）に達したため、読み込みを終了しました")
+                break
+            
+            frame_count += 1
+        
+        if progress_bar:
+            progress_bar.progress(1.0)
+        if progress_container:
+            progress_container.success(f"✅ {read_count} フレームを読み込みました")
         
         return frames if frames else None
     
@@ -94,11 +183,15 @@ def _read_frames_from_video(video_path: str) -> Optional[List[np.ndarray]]:
         cap.release()
 
 
-def load_video_frames(uploaded_file: Any) -> Optional[List[np.ndarray]]:
-    """アップロードされた動画ファイルからフレームを読み込む
+def load_video_frames(
+    uploaded_file: Any,
+    progress_container: Any = None
+) -> Optional[List[np.ndarray]]:
+    """アップロードされた動画ファイルからフレームを読み込む（Cloud Run 対応）
     
     Args:
         uploaded_file: Streamlitのアップロードファイルオブジェクト
+        progress_container: 進行状況表示用のコンテナ
     
     Returns:
         フレームのリスト（失敗時はNone）
@@ -111,28 +204,54 @@ def load_video_frames(uploaded_file: Any) -> Optional[List[np.ndarray]]:
         return None
     
     try:
-        return _read_frames_from_video(tmp_path)
+        return _read_frames_from_video(tmp_path, progress_container=progress_container)
     finally:
-        if os.path.exists(tmp_path):
-            os.unlink(tmp_path)
+        # 一時ファイルを削除（Cloud Run では /tmp は自動クリーンアップされるが、明示的に削除）
+        try:
+            if os.path.exists(tmp_path):
+                os.unlink(tmp_path)
+        except Exception:
+            pass  # 削除失敗は無視
 
 
-@st.cache_data
-def process_video_frames(frames: List[np.ndarray]) -> List[Optional[Dict[str, Dict[str, float]]]]:
-    """動画フレームを処理してランドマークを取得
+def process_video_frames(
+    frames: List[np.ndarray],
+    progress_container: Any = None
+) -> List[Optional[Dict[str, Dict[str, float]]]]:
+    """動画フレームを処理してランドマークを取得（Cloud Run 対応：進行状況表示）
     
     Args:
         frames: フレームのリスト
+        progress_container: 進行状況表示用のコンテナ
     
     Returns:
         各フレームのランドマーク辞書のリスト
     """
     pose = initialize_pose()
     results = []
+    total_frames = len(frames)
     
-    for frame in frames:
+    progress_bar = None
+    status_text = None
+    if progress_container:
+        progress_bar = progress_container.progress(0)
+        status_text = progress_container.empty()
+    
+    for idx, frame in enumerate(frames):
         landmarks = process_frame(pose, frame)
         results.append(landmarks)
+        
+        # 進行状況更新（10フレームごと）
+        if progress_bar and idx % 10 == 0:
+            progress = (idx + 1) / total_frames
+            progress_bar.progress(progress)
+            if status_text:
+                status_text.text(f"姿勢推定中: {idx + 1}/{total_frames} フレーム")
+    
+    if progress_bar:
+        progress_bar.progress(1.0)
+    if status_text:
+        status_text.text(f"✅ {total_frames} フレームの姿勢推定が完了しました")
     
     return results
 
@@ -297,9 +416,10 @@ def create_annotated_video(
         st.warning("フレームまたはランドマークが空です")
         return None
     
-    # 一時ファイルに保存
-    with tempfile.NamedTemporaryFile(delete=False, suffix='.mp4') as tmp_file:
-        output_path = tmp_file.name
+    # Cloud Run 対応: /tmp フォルダに一時ファイルを保存
+    tmp_dir = "/tmp"
+    os.makedirs(tmp_dir, exist_ok=True)
+    output_path = tempfile.mktemp(suffix='.mp4', dir=tmp_dir)
     
     # 動画のサイズとFPSを取得（最初のフレームから）
     if len(frames[0].shape) < 2:
@@ -316,46 +436,12 @@ def create_annotated_video(
     
     fps = 30.0  # デフォルトFPS
     
-    # コーデックのサポート確認（複数のコーデックを試行）
-    codecs_to_try = [
-        ('mp4v', '.mp4'),
-        ('XVID', '.avi'),
-        ('avc1', '.mp4'),
-        ('MJPG', '.avi'),
-    ]
+    # Cloud Run 対応: avc1 コーデックのみ使用（Streamlit st.video() で安定再生可能）
+    fourcc = cv2.VideoWriter_fourcc(*'avc1')
+    out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
     
-    out = None
-    used_codec = None
-    used_suffix = None
-    
-    for codec_name, suffix in codecs_to_try:
-        # 一時ファイルの拡張子を変更
-        if suffix != '.mp4':
-            # 拡張子を変更した一時ファイルを作成
-            base_path = output_path.rsplit('.', 1)[0]
-            test_output_path = base_path + suffix
-        else:
-            test_output_path = output_path
-        
-        fourcc = cv2.VideoWriter_fourcc(*codec_name)
-        test_out = cv2.VideoWriter(test_output_path, fourcc, fps, (width, height))
-        
-        # VideoWriter の初期化成功を確認
-        if test_out.isOpened():
-            out = test_out
-            used_codec = codec_name
-            used_suffix = suffix
-            output_path = test_output_path
-            st.info(f"VideoWriter 初期化成功: コーデック={codec_name}, サイズ={width}x{height}, FPS={fps}, パス={output_path}")
-            break
-        else:
-            test_out.release()
-            if os.path.exists(test_output_path):
-                os.unlink(test_output_path)
-    
-    # すべてのコーデックで失敗した場合
-    if out is None or not out.isOpened():
-        st.error(f"VideoWriter の初期化に失敗しました。すべてのコーデック ({', '.join([c[0] for c in codecs_to_try])}) を試行しましたが、どれもサポートされていません。")
+    if not out.isOpened():
+        st.error("H.264(avc1) コーデックが利用できません。ffmpeg入りOpenCVが必要です")
         return None
     
     written_frames = 0
@@ -1223,86 +1309,139 @@ def _render_analysis_results(
 
 
 
-def _process_video_analysis(uploaded_file: Any) -> Tuple[
+def _process_video_analysis(
+    uploaded_file: Any,
+    progress_container: Any = None
+) -> Tuple[
     Optional[List[np.ndarray]],
     Optional[List[Optional[Dict[str, Dict[str, float]]]]],
     Optional[List[Optional[float]]]
 ]:
-    """動画解析を実行する
+    """動画解析を実行する（Cloud Run 対応：進行状況表示）
     
     Args:
         uploaded_file: アップロードされたファイルオブジェクト
+        progress_container: 進行状況表示用のコンテナ
     
     Returns:
         (フレームリスト, ランドマークリスト, 角度リスト)のタプル
     """
-    with st.spinner("動画を読み込んでいます..."):
-        frames = load_video_frames(uploaded_file)
+    if progress_container:
+        progress_container.info("📹 動画を読み込んでいます...")
+    
+    frames = load_video_frames(uploaded_file, progress_container=progress_container)
     
     if frames is None or len(frames) == 0:
-        st.error("動画の読み込みに失敗しました")
+        if progress_container:
+            progress_container.error("❌ 動画の読み込みに失敗しました")
         return None, None, None
     
-    st.success(f"{len(frames)} フレームを読み込みました")
+    if progress_container:
+        progress_container.info("🤖 姿勢推定を実行しています...")
     
-    with st.spinner("姿勢推定を実行しています..."):
-        landmarks_list = process_video_frames(frames)
+    landmarks_list = process_video_frames(frames, progress_container=progress_container)
     
-    with st.spinner("角度を計算しています..."):
-        elbow_angles = calculate_elbow_angles_from_landmarks(landmarks_list)
+    if progress_container:
+        progress_container.info("📐 角度を計算しています...")
+    
+    elbow_angles = calculate_elbow_angles_from_landmarks(landmarks_list)
+    
+    if progress_container:
+        progress_container.success(f"✅ 解析完了！{len(frames)} フレームを解析しました")
     
     return frames, landmarks_list, elbow_angles
 
 
 def main() -> None:
-    """メインアプリケーション（ダッシュボード型UI）"""
-    st.title("⚾ 野球フォーム解析ダッシュボード")
+    """メインアプリケーション（Cloud Run 対応：画面下に追加表示）"""
+    st.title("⚾ 野球フォーム解析アプリ")
     st.markdown("---")
     
     # セッション状態の初期化
-    if "video_list" not in st.session_state:
-        st.session_state["video_list"] = []
-    if "selected_video_index" not in st.session_state:
-        st.session_state["selected_video_index"] = 0
-    if "analysis_file_name" not in st.session_state:
-        st.session_state["analysis_file_name"] = None
+    if "analysis_results" not in st.session_state:
+        st.session_state["analysis_results"] = []
+    if "current_analysis_index" not in st.session_state:
+        st.session_state["current_analysis_index"] = -1
     
     # 動画アップロードセクション
-    with st.expander("📤 動画をアップロード", expanded=len(st.session_state.get("video_list", [])) == 0):
-        uploaded_file = _render_video_upload()
+    st.subheader("📤 動画をアップロード")
+    uploaded_file = _render_video_upload()
+    
+    # 解析ボタン
+    if uploaded_file is not None:
+        col1, col2 = st.columns([1, 4])
+        with col1:
+            analyze_button = st.button("🚀 解析を開始", type="primary", use_container_width=True)
         
-        if uploaded_file is not None:
-            # 別のファイルがアップロードされた場合は解析結果をリセット
-            if st.session_state["analysis_file_name"] != uploaded_file.name:
-                st.session_state["analysis_file_name"] = uploaded_file.name
+        with col2:
+            if uploaded_file.name:
+                st.info(f"📁 選択されたファイル: {uploaded_file.name}")
+        
+        if analyze_button:
+            # 進行状況表示用のコンテナ
+            progress_container = st.container()
             
-            # 解析ボタンが押されたら解析を実行し、結果をvideo_listに保存
-            if st.button("🚀 解析を開始", type="primary", use_container_width=True):
-                frames, landmarks_list, elbow_angles = _process_video_analysis(uploaded_file)
-                
-                if frames is not None and landmarks_list is not None and elbow_angles is not None:
-                    # video_listに追加
-                    video_data = {
-                        "name": uploaded_file.name,
-                        "frames": frames,
-                        "landmarks": landmarks_list,
-                        "elbow_angles": elbow_angles,
-                        "annotated_overlay_path": None,
-                        "annotated_skeleton_path": None,
-                    }
-                    st.session_state["video_list"].append(video_data)
-                    st.session_state["selected_video_index"] = len(st.session_state["video_list"]) - 1
-                    st.success(f"✅ 解析完了！{len(frames)} フレームを解析しました")
-                    st.rerun()
+            with progress_container:
+                frames, landmarks_list, elbow_angles = _process_video_analysis(
+                    uploaded_file,
+                    progress_container=progress_container
+                )
+            
+            if frames is not None and landmarks_list is not None and elbow_angles is not None:
+                # 解析結果をセッション状態に保存
+                analysis_data = {
+                    "name": uploaded_file.name,
+                    "frames": frames,
+                    "landmarks": landmarks_list,
+                    "elbow_angles": elbow_angles,
+                    "annotated_overlay_path": None,
+                    "annotated_skeleton_path": None,
+                }
+                st.session_state["analysis_results"].append(analysis_data)
+                st.session_state["current_analysis_index"] = len(st.session_state["analysis_results"]) - 1
+                st.rerun()
     
-    # 左右分割レイアウト
-    left_col, right_col = st.columns([1, 4])
+    st.markdown("---")
     
-    with left_col:
-        _render_video_list_panel()
-    
-    with right_col:
-        _render_video_detail_panel()
+    # 解析結果を画面下に追加表示（画面遷移なし）
+    if st.session_state["analysis_results"]:
+        st.subheader("📊 解析結果")
+        
+        # 解析結果の選択（複数の解析結果がある場合）
+        if len(st.session_state["analysis_results"]) > 1:
+            result_names = [f"{i+1}. {result['name']}" for i, result in enumerate(st.session_state["analysis_results"])]
+            selected_idx = st.selectbox(
+                "表示する解析結果を選択",
+                options=range(len(result_names)),
+                format_func=lambda x: result_names[x],
+                index=st.session_state["current_analysis_index"]
+            )
+            st.session_state["current_analysis_index"] = selected_idx
+        else:
+            st.session_state["current_analysis_index"] = 0
+        
+        # 現在の解析結果を取得
+        current_result = st.session_state["analysis_results"][st.session_state["current_analysis_index"]]
+        frames = current_result["frames"]
+        landmarks_list = current_result["landmarks"]
+        elbow_angles = current_result["elbow_angles"]
+        
+        # 解析結果を表示（タブ形式）
+        tabs = st.tabs(["📊 解析結果", "📈 グラフ", "🎬 解析動画", "⭐ 評価"])
+        
+        with tabs[0]:
+            _render_analysis_tab(frames, landmarks_list, elbow_angles)
+        
+        with tabs[1]:
+            _render_graph_tab(frames, landmarks_list, elbow_angles)
+        
+        with tabs[2]:
+            _render_video_tab(frames, landmarks_list, current_result)
+        
+        with tabs[3]:
+            _render_evaluation_tab(frames, landmarks_list, elbow_angles)
+    else:
+        st.info("💡 動画をアップロードして解析を開始してください")
 
 
 if __name__ == "__main__":
