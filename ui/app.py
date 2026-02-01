@@ -6,6 +6,7 @@ import cv2
 from typing import Optional, Dict, List, Tuple, Any
 import tempfile
 import os
+import io
 import matplotlib.pyplot as plt
 
 from pose.mediapipe_pose import initialize_pose, process_frame
@@ -53,7 +54,8 @@ def _save_uploaded_file_to_temp(uploaded_file: Any) -> Optional[str]:
 
     try:
         # read() で一度だけバイト列取得
-        uploaded_file.seek(0)  # ファイルポインタを先頭に戻す
+        if hasattr(uploaded_file, 'seek'):
+            uploaded_file.seek(0)  # ファイルポインタを先頭に戻す
         file_bytes = uploaded_file.read()
         if not file_bytes:
             st.error("アップロードされた動画が空です")
@@ -64,7 +66,10 @@ def _save_uploaded_file_to_temp(uploaded_file: Any) -> Optional[str]:
         os.makedirs(tmp_dir, exist_ok=True)
         
         # ファイル拡張子を取得
-        file_ext = os.path.splitext(uploaded_file.name)[1] or ".mp4"
+        if hasattr(uploaded_file, 'name') and uploaded_file.name:
+            file_ext = os.path.splitext(uploaded_file.name)[1] or ".mp4"
+        else:
+            file_ext = ".mp4"
         
         # 一時ファイルパスを生成
         tmp_file_path = tempfile.mktemp(suffix=file_ext, dir=tmp_dir)
@@ -1353,7 +1358,7 @@ def _process_video_analysis(
 
 
 def main() -> None:
-    """メインアプリケーション（Cloud Run 対応：画面下に追加表示）"""
+    """メインアプリケーション（Cloud Run 対応：解析中に画面がリセットされない）"""
     st.title("⚾ 野球フォーム解析アプリ")
     st.markdown("---")
     
@@ -1362,43 +1367,107 @@ def main() -> None:
         st.session_state["analysis_results"] = []
     if "current_analysis_index" not in st.session_state:
         st.session_state["current_analysis_index"] = -1
+    if "is_analyzing" not in st.session_state:
+        st.session_state["is_analyzing"] = False
+    if "uploaded_file_name" not in st.session_state:
+        st.session_state["uploaded_file_name"] = None
+    if "uploaded_file_bytes" not in st.session_state:
+        st.session_state["uploaded_file_bytes"] = None
     
     # 動画アップロードセクション
     st.subheader("📤 動画をアップロード")
-    uploaded_file = _render_video_upload()
     
-    # 解析ボタン
+    # 解析中はアップロードを無効化
+    uploaded_file = None
+    if not st.session_state["is_analyzing"]:
+        uploaded_file = _render_video_upload()
+    
+    # アップロードされたファイルをセッション状態に保存
     if uploaded_file is not None:
-        col1, col2 = st.columns([1, 4])
-        with col1:
-            analyze_button = st.button("🚀 解析を開始", type="primary", use_container_width=True)
+        uploaded_file.seek(0)
+        st.session_state["uploaded_file_name"] = uploaded_file.name
+        st.session_state["uploaded_file_bytes"] = uploaded_file.read()
+        uploaded_file.seek(0)  # 読み取り位置をリセット
+    
+    # 解析中でない場合のみ解析ボタンを表示
+    if not st.session_state["is_analyzing"]:
+        if st.session_state["uploaded_file_name"] is not None:
+            col1, col2 = st.columns([1, 4])
+            with col1:
+                analyze_button = st.button("🚀 解析を開始", type="primary", use_container_width=True)
+            
+            with col2:
+                st.info(f"📁 選択されたファイル: {st.session_state['uploaded_file_name']}")
+            
+            if analyze_button:
+                # 解析状態を開始
+                st.session_state["is_analyzing"] = True
+                st.rerun()
+    
+    # 解析中の処理
+    if st.session_state["is_analyzing"]:
+        # 解析中表示
+        st.markdown("---")
+        progress_section = st.container()
         
-        with col2:
-            if uploaded_file.name:
-                st.info(f"📁 選択されたファイル: {uploaded_file.name}")
-        
-        if analyze_button:
+        with progress_section:
+            st.subheader("🔄 解析中...")
+            st.info("⏳ 動画の解析を実行しています。しばらくお待ちください。")
+            st.warning("⚠️ 解析中はこのページを閉じないでください。")
+            
             # 進行状況表示用のコンテナ
             progress_container = st.container()
             
-            with progress_container:
-                frames, landmarks_list, elbow_angles = _process_video_analysis(
-                    uploaded_file,
-                    progress_container=progress_container
-                )
-            
-            if frames is not None and landmarks_list is not None and elbow_angles is not None:
-                # 解析結果をセッション状態に保存
-                analysis_data = {
-                    "name": uploaded_file.name,
-                    "frames": frames,
-                    "landmarks": landmarks_list,
-                    "elbow_angles": elbow_angles,
-                    "annotated_overlay_path": None,
-                    "annotated_skeleton_path": None,
-                }
-                st.session_state["analysis_results"].append(analysis_data)
-                st.session_state["current_analysis_index"] = len(st.session_state["analysis_results"]) - 1
+            # アップロードされたファイルを再構築
+            if st.session_state["uploaded_file_bytes"] is not None:
+                # BytesIO オブジェクトを作成
+                uploaded_file_obj = io.BytesIO(st.session_state["uploaded_file_bytes"])
+                uploaded_file_obj.name = st.session_state["uploaded_file_name"]
+                
+                try:
+                    # 解析を実行（長時間処理のため、エラーハンドリングを追加）
+                    with progress_container:
+                        frames, landmarks_list, elbow_angles = _process_video_analysis(
+                            uploaded_file_obj,
+                            progress_container=progress_container
+                        )
+                    
+                    # 解析完了後の処理
+                    if frames is not None and landmarks_list is not None and elbow_angles is not None:
+                        # 解析結果をセッション状態に保存
+                        analysis_data = {
+                            "name": st.session_state["uploaded_file_name"],
+                            "frames": frames,
+                            "landmarks": landmarks_list,
+                            "elbow_angles": elbow_angles,
+                            "annotated_overlay_path": None,
+                            "annotated_skeleton_path": None,
+                        }
+                        st.session_state["analysis_results"].append(analysis_data)
+                        st.session_state["current_analysis_index"] = len(st.session_state["analysis_results"]) - 1
+                        
+                        # 解析状態を終了
+                        st.session_state["is_analyzing"] = False
+                        
+                        # 解析完了メッセージ
+                        st.success("✅ 解析が完了しました！結果は下に表示されます。")
+                        
+                        # 画面を更新（解析完了後のみ）
+                        st.rerun()
+                    else:
+                        # 解析失敗
+                        st.session_state["is_analyzing"] = False
+                        st.error("❌ 解析に失敗しました。もう一度お試しください。")
+                        st.rerun()
+                except Exception as e:
+                    # 予期しないエラー
+                    st.session_state["is_analyzing"] = False
+                    st.error(f"❌ 解析中にエラーが発生しました: {str(e)}")
+                    st.rerun()
+            else:
+                # ファイルが存在しない場合
+                st.session_state["is_analyzing"] = False
+                st.error("❌ アップロードされたファイルが見つかりません。")
                 st.rerun()
     
     st.markdown("---")
@@ -1414,33 +1483,34 @@ def main() -> None:
                 "表示する解析結果を選択",
                 options=range(len(result_names)),
                 format_func=lambda x: result_names[x],
-                index=st.session_state["current_analysis_index"]
+                index=st.session_state["current_analysis_index"] if st.session_state["current_analysis_index"] >= 0 else 0
             )
             st.session_state["current_analysis_index"] = selected_idx
         else:
             st.session_state["current_analysis_index"] = 0
         
         # 現在の解析結果を取得
-        current_result = st.session_state["analysis_results"][st.session_state["current_analysis_index"]]
-        frames = current_result["frames"]
-        landmarks_list = current_result["landmarks"]
-        elbow_angles = current_result["elbow_angles"]
-        
-        # 解析結果を表示（タブ形式）
-        tabs = st.tabs(["📊 解析結果", "📈 グラフ", "🎬 解析動画", "⭐ 評価"])
-        
-        with tabs[0]:
-            _render_analysis_tab(frames, landmarks_list, elbow_angles)
-        
-        with tabs[1]:
-            _render_graph_tab(frames, landmarks_list, elbow_angles)
-        
-        with tabs[2]:
-            _render_video_tab(frames, landmarks_list, current_result)
-        
-        with tabs[3]:
-            _render_evaluation_tab(frames, landmarks_list, elbow_angles)
-    else:
+        if st.session_state["current_analysis_index"] >= 0:
+            current_result = st.session_state["analysis_results"][st.session_state["current_analysis_index"]]
+            frames = current_result["frames"]
+            landmarks_list = current_result["landmarks"]
+            elbow_angles = current_result["elbow_angles"]
+            
+            # 解析結果を表示（タブ形式）
+            tabs = st.tabs(["📊 解析結果", "📈 グラフ", "🎬 解析動画", "⭐ 評価"])
+            
+            with tabs[0]:
+                _render_analysis_tab(frames, landmarks_list, elbow_angles)
+            
+            with tabs[1]:
+                _render_graph_tab(frames, landmarks_list, elbow_angles)
+            
+            with tabs[2]:
+                _render_video_tab(frames, landmarks_list, current_result)
+            
+            with tabs[3]:
+                _render_evaluation_tab(frames, landmarks_list, elbow_angles)
+    elif not st.session_state["is_analyzing"]:
         st.info("💡 動画をアップロードして解析を開始してください")
 
 
