@@ -8,12 +8,14 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
 # OpenCV/MediaPipe 用のシステム依存をインストール
+# ffmpeg を追加して H.264 (avc1) コーデック対応
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libglib2.0-0 \
     libsm6 \
     libxext6 \
     libxrender1 \
     libgl1 \
+    ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
 # 作業ディレクトリを設定
